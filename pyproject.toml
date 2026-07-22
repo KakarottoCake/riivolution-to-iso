@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riivultimatum"
+version = "0.1.0"
+description = "Bake Riivolution mods into standalone Wii ISOs that boot under USB Loader GX, including code/memory patches."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Riivolution Ultimatum contributors" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+riivultimatum = "riivultimatum.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["riivultimatum*"]
+
+[tool.setuptools.package-data]
+"riivultimatum" = ["vendor/*.bin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

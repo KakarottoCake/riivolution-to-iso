@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Bundled third-party tools (wit is a 15MB download, not ours to vendor)
+tools/
+
+# Local staging and test artefacts
+.scratch/
+*.iso
+*.wbfs
