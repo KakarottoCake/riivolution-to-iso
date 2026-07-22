@@ -158,6 +158,14 @@ def test_choice_off_disables_the_option():
     assert selected_patches(disc, "SMNE01") == []
 
 
+def test_empty_choice_value_disables_the_option():
+    """The GUI stores a disabled option as "" -- it must resolve to disabled,
+    not raise "no choice ''". Regression for that crash."""
+    disc = load(BASIC)
+    apply_selections(disc, {"Newer/Game": ""})
+    assert selected_patches(disc, "SMNE01") == []
+
+
 def test_unknown_option_and_choice_are_errors():
     disc = load(BASIC)
     with pytest.raises(SelectionError, match="no option matches"):

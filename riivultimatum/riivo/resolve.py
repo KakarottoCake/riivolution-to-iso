@@ -89,7 +89,11 @@ def apply_selections(disc: Disc, selections: dict[str, str]) -> None:
 
 
 def _resolve_choice_value(option, value: str) -> int:
-    if value.lower() in {"off", "disabled", "none"}:
+    # An empty value means "leave this option disabled". The GUI stores a
+    # disabled option as "", and on the CLI `--choice "Section/Option="` reads
+    # the same way; both must resolve to choice 0, not fall through to the
+    # "no such choice ''" error.
+    if value.strip().lower() in {"", "off", "disabled", "none"}:
         return 0
     if value.isdigit():
         index = int(value)
