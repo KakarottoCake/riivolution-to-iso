@@ -120,6 +120,42 @@ wrong.
 
 ## Use
 
+### Graphical interface
+
+```bash
+riivultimatum --gui        # or: riivultimatum-gui
+```
+
+A single window: pick the source game, add one or more mods, tick the options
+you want per mod, choose an ISO or a USB-drive WBFS output, and press **Build**.
+The build runs on a background thread with a live log, so the window stays
+responsive through the multi-minute extract/compose. **Dry run** applies every
+patch and shows the report without writing an image — the fastest way to see
+whether a mod converts cleanly.
+
+The GUI is a thin shell over the same engine the CLI uses; anything it does,
+the CLI can do too.
+
+### Stacking multiple mods
+
+Both the GUI (add several mods to the list) and the CLI (repeat `--xml`) apply
+mods in order onto one disc. A later mod's files and memory writes layer on top
+of an earlier mod's, so **order is meaningful — the last mod wins on overlap**.
+Before building, the tool checks every pair of mods for the same file being
+replaced twice or overlapping memory writes, and lists each collision in the
+report as a `WARNING` naming both mods (it does not block the build; the
+overwrite is deterministic, you just get told).
+
+```bash
+riivultimatum --iso game.iso --xml base.xml --xml addon.xml \
+              --all-defaults --out combined.iso
+```
+
+This is unproven territory: no two real mods have been stacked and booted yet.
+The mechanism is sound (see below) but treat multi-mod output as experimental.
+
+### Command line
+
 ```bash
 # See what the mod offers
 riivultimatum --iso game.iso --xml sd/riivolution/mod.xml --list-options
@@ -196,8 +232,14 @@ riivultimatum/
   dol/memory.py      <memory> patch -> DOL edit lowering  (the core)
   dol/gecko.py       ocarina hook finding and branch encoding
   disc/wit.py        extract/compose via Wiimms ISO Tools
-  report.py, cli.py
+  pipeline.py        one build: resolve, stack mods, conflict-check, compose
+  cli.py             command-line front-end over pipeline
+  gui.py             Tkinter front-end over pipeline
+  report.py
 ```
+
+Both front-ends call `pipeline.build`; there is no second implementation of the
+patching logic behind the GUI.
 
 ## Testing
 

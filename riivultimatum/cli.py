@@ -1,21 +1,21 @@
-"""Command-line entry point."""
+"""Command-line entry point.
+
+Thin wrapper over `pipeline.build`. All the real work -- resolving mods,
+stacking them, conflict detection, extract/patch/compose -- lives in
+`pipeline.py` so the GUI runs the identical code path.
+"""
 
 from __future__ import annotations
 
 import argparse
 import sys
-import tempfile
 from pathlib import Path
 
-from . import __version__
-from .disc.backend import DiscError, read_boot_info, usb_loader_gx_path
-from .disc.wit import WitBackend
-from .dol.memory import MemoryLowerer
-from .dol.reader import Dol, DolError
-from .report import Report
-from .riivo import parser as riivo_parser
+from . import __version__, pipeline
+from .disc.backend import DiscError
+from .dol.reader import DolError
+from .pipeline import BuildRequest, ModSpec, PipelineError
 from .riivo import resolve as riivo_resolve
-from .riivo.fst import FstPatcher
 from .riivo.parser import RiivolutionXmlError
 from .riivo.resolve import SelectionError
 
@@ -24,27 +24,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="riivultimatum",
         description=(
-            "Bake a Riivolution mod into a standalone Wii ISO that boots under "
-            "USB Loader GX, including memory/code patches."
+            "Bake one or more Riivolution mods into a standalone Wii ISO that "
+            "boots under USB Loader GX, including memory/code patches."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  riivultimatum --iso game.iso --xml sd/riivolution/mod.xml "
-            "--sd-root sd --list-options\n"
-            "  riivultimatum --iso game.iso --xml sd/riivolution/mod.xml "
-            '--sd-root sd --choice "Newer/Game=Enabled" --out newer.iso\n'
+            "  riivultimatum --iso game.iso --xml mod/riivolution/mod.xml --list-options\n"
+            "  riivultimatum --iso game.iso --xml mod/riivolution/mod.xml "
+            '--choice "Section/Option=Choice" --out modded.iso\n'
+            "  # stack two mods (later ones win on conflict):\n"
+            "  riivultimatum --iso game.iso --xml a.xml --xml b.xml "
+            "--all-defaults --out combined.iso\n"
+            "  # launch the graphical interface:\n"
+            "  riivultimatum --gui\n"
         ),
     )
     p.add_argument("--version", action="version", version=f"riivultimatum {__version__}")
-    p.add_argument("--iso", type=Path, required=True, help="source (unmodified) disc image")
-    p.add_argument("--xml", type=Path, required=True, help="the mod's Riivolution XML")
+    p.add_argument("--gui", action="store_true", help="launch the graphical interface")
+    p.add_argument("--iso", type=Path, help="source (unmodified) disc image")
+    p.add_argument(
+        "--xml",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="XML",
+        help="a mod's Riivolution XML; repeat to stack several mods in order",
+    )
     p.add_argument(
         "--sd-root",
         type=Path,
+        action="append",
+        default=[],
         help=(
-            "root of the mod's SD-card layout (the folder containing "
-            "riivolution/). Defaults to the XML's parent's parent."
+            "root of a mod's SD-card layout (the folder containing riivolution/). "
+            "Repeatable, paired with --xml in order; defaults per-mod to the "
+            "XML's parent's parent."
         ),
     )
     p.add_argument(
@@ -68,12 +83,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="SECTION/OPTION=CHOICE",
-        help="select an option; repeatable. Use --list-options to see the tree.",
+        help=(
+            "select an option; repeatable. With multiple mods this applies to "
+            "every mod that has a matching option. Use --list-options to see them."
+        ),
     )
     p.add_argument(
         "--list-options",
         action="store_true",
-        help="print the option tree and exit",
+        help="print the option tree of each --xml and exit",
     )
     p.add_argument(
         "--all-defaults",
@@ -88,9 +106,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--keep-game-id",
         action="store_true",
         help=(
-            "do not auto-change the game ID. By default the 4th character is "
-            "bumped so the mod gets its own save slot, since Riivolution's "
-            "savegame redirection cannot be baked into an ISO."
+            "do not auto-change the game ID. By default the game code is bumped "
+            "so the mod gets its own save slot, since Riivolution's savegame "
+            "redirection cannot be baked into an ISO."
         ),
     )
     p.add_argument("--title", help="override the disc title in the output")
@@ -103,21 +121,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="report what would be patched without building an ISO",
+        help="report what would be patched without building an image",
     )
     return p
-
-
-def _default_sd_root(xml: Path) -> Path:
-    """Guess the SD root from the XML's location.
-
-    Mods ship as `<sd>/riivolution/mod.xml`, so the SD root is normally two
-    levels up. If the XML is not inside a `riivolution` folder, fall back to
-    its parent.
-    """
-    if xml.parent.name.lower() == "riivolution":
-        return xml.parent.parent
-    return xml.parent
 
 
 def _parse_choices(raw: list[str]) -> dict[str, str]:
@@ -132,160 +138,84 @@ def _parse_choices(raw: list[str]) -> dict[str, str]:
     return selections
 
 
-def _bump_game_id(game_id: str) -> str:
-    """Give the mod its own save slot by altering the *game code*.
-
-    A game ID is `CCCRMM`: three game-code characters, one region character,
-    two maker characters. Only the game code may be touched. Changing the
-    region character re-flags the disc -- wit derives the region setting from
-    it, so bumping SB4E01 to SB4R01 turns a USA game into a PAL one, with the
-    50Hz and region-check breakage that implies.
-    """
-    replacement = "Z" if game_id[2] != "Z" else "Y"
-    return game_id[:2] + replacement + game_id[3:6]
+def _mod_specs(args: argparse.Namespace, selections: dict[str, str]) -> list[ModSpec]:
+    """Pair each --xml with its optional --sd-root, in order."""
+    specs: list[ModSpec] = []
+    for i, xml in enumerate(args.xml):
+        sd_root = args.sd_root[i] if i < len(args.sd_root) else None
+        specs.append(
+            ModSpec(
+                xml=xml,
+                sd_root=sd_root,
+                selections=dict(selections),
+                all_defaults=args.all_defaults,
+            )
+        )
+    return specs
 
 
 def run(args: argparse.Namespace) -> int:
-    report = Report()
-
-    # -- inputs ---------------------------------------------------------
-    if not args.iso.is_file():
-        print(f"error: no such ISO: {args.iso}", file=sys.stderr)
-        return 2
-    if not args.xml.is_file():
-        print(f"error: no such XML: {args.xml}", file=sys.stderr)
+    if not args.xml:
+        print("error: at least one --xml is required", file=sys.stderr)
         return 2
 
-    boot = read_boot_info(args.iso)
-    disc = riivo_parser.parse(args.xml)
-    sd_root = args.sd_root or _default_sd_root(args.xml)
-
-    print(f"Game:  {boot.game_id}  rev {boot.revision}  {boot.title}")
-    print(f"Mod:   {args.xml}")
-    print(f"SD:    {sd_root}")
-
-    if not disc.is_valid_for_game(boot.game_id, boot.disc_number, boot.revision):
-        f = disc.game_filter
-        print(
-            f"error: this XML does not apply to {boot.game_id}. It targets "
-            f"game={f.game!r} developer={f.developer!r} regions={f.regions or 'any'}.",
-            file=sys.stderr,
-        )
-        return 2
-
-    # -- option selection ------------------------------------------------
+    # --list-options is pure XML inspection; it needs no ISO and no wit.
     if args.list_options:
-        print()
-        print(riivo_resolve.describe_options(disc))
+        for spec in _mod_specs(args, {}):
+            disc = pipeline.load_disc(spec)
+            print(f"\n=== {spec.name} ===")
+            print(riivo_resolve.describe_options(disc))
         return 0
+
+    if not args.iso:
+        print("error: --iso is required", file=sys.stderr)
+        return 2
 
     selections = _parse_choices(args.choice)
-    riivo_resolve.apply_selections(disc, selections)
+    request = BuildRequest(
+        iso=args.iso,
+        mods=_mod_specs(args, selections),
+        out=args.out,
+        wbfs=args.wbfs,
+        game_id=args.game_id,
+        keep_game_id=args.keep_game_id,
+        title=args.title,
+        wit_path=args.wit_path,
+        work_dir=args.work_dir,
+        dry_run=args.dry_run,
+    )
 
-    if not selections and not args.all_defaults and disc.sections:
+    result = pipeline.build(request, progress=print)
+
+    print()
+    print(result.report.render())
+    print()
+
+    if not result.ok:
+        print("error: some patches failed; no image was written.", file=sys.stderr)
+        return 1
+    if result.output and args.wbfs:
         print(
-            "error: this XML has options but no --choice was given. Run with "
-            "--list-options to see them, or pass --all-defaults to accept the "
-            "XML's own defaults (usually 'disabled').",
-            file=sys.stderr,
+            "Eject the drive safely, then in USB Loader GX set this game's IOS "
+            "to your cIOS slot (usually 249) and turn Ocarina/cheats OFF -- the "
+            "mod's code is already baked in."
         )
-        return 2
-
-    patches = riivo_resolve.selected_patches(disc, boot.game_id)
-    if not patches:
-        print("error: the current selection activates no patches.", file=sys.stderr)
-        return 2
-    print(f"Active patches: {len(patches)}")
-
-    if not args.dry_run and not args.out:
-        print("error: --out is required unless --dry-run is given", file=sys.stderr)
-        return 2
-
-    # -- staging ---------------------------------------------------------
-    backend = WitBackend(args.wit_path)
-    temp_dir: tempfile.TemporaryDirectory | None = None
-    if args.work_dir:
-        work = args.work_dir
-        work.mkdir(parents=True, exist_ok=True)
-    else:
-        temp_dir = tempfile.TemporaryDirectory(prefix="riivultimatum-")
-        work = Path(temp_dir.name)
-
-    try:
-        resolver = riivo_resolve.ExternalResolver(sd_root, disc.root)
-
-        if args.dry_run:
-            # Without an extracted image we cannot check disc-side targets, so
-            # only the memory patches are meaningfully verifiable here.
-            print("\n(dry run: extracting image to evaluate patches)")
-
-        print("Extracting image...")
-        image_root = backend.extract(args.iso, work / "image")
-
-        print("Applying file/folder patches...")
-        FstPatcher(image_root, resolver, report).apply(patches)
-
-        print("Applying memory patches...")
-        dol_path = image_root / "sys" / "main.dol"
-        if not dol_path.is_file():
-            report.failed("memory", "sys/main.dol", "executable missing from image")
-        else:
-            dol = Dol.parse(dol_path.read_bytes())
-            MemoryLowerer(dol, resolver, report).apply(patches)
-            dol_path.write_bytes(dol.serialize())
-
-        print()
-        print(report.render())
-        print()
-
-        if report.has_failures:
-            print(
-                "error: some patches failed; refusing to build a broken ISO.",
-                file=sys.stderr,
-            )
-            return 1
-
-        if args.dry_run:
-            print("Dry run complete; no ISO written.")
-            return 0
-
-        game_id = args.game_id
-        if not game_id and not args.keep_game_id:
-            game_id = _bump_game_id(boot.game_id)
-        if game_id:
-            print(f"Output game ID: {game_id} (was {boot.game_id})")
-
-        title = args.title or boot.title
-        if args.wbfs:
-            destination = usb_loader_gx_path(args.out, game_id or boot.game_id, title)
-        else:
-            destination = args.out
-
-        print(f"Building {destination}...")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        backend.compose(
-            image_root, destination, game_id=game_id, title=args.title, wbfs=args.wbfs
-        )
-        print(f"Done: {destination}")
-        if args.wbfs:
-            print(
-                "Eject the drive safely, then in USB Loader GX set this game's "
-                "IOS to your cIOS slot (usually 249) and turn Ocarina/cheats "
-                "OFF -- the mod's code is already baked in."
-            )
-        return 0
-
-    finally:
-        if temp_dir is not None:
-            temp_dir.cleanup()
-        elif args.work_dir:
-            print(f"(staging kept at {args.work_dir})")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
+
+    if args.gui:
+        from . import gui
+
+        return gui.main()
+
     try:
         return run(args)
+    except PipelineError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (RiivolutionXmlError, SelectionError, DiscError, DolError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

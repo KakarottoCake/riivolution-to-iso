@@ -19,6 +19,9 @@ dev = ["pytest>=8"]
 [project.scripts]
 riivultimatum = "riivultimatum.cli:main"
 
+[project.gui-scripts]
+riivultimatum-gui = "riivultimatum.gui:main"
+
 [tool.setuptools.packages.find]
 include = ["riivultimatum*"]
 

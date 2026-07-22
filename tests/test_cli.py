@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from riivultimatum.cli import _bump_game_id, _default_sd_root, main
+from riivultimatum.cli import main
 from riivultimatum.disc.backend import DiscError, read_boot_info, usb_loader_gx_path
+from riivultimatum.pipeline import bump_game_id, default_sd_root
 
 XML = """
 <wiidisc version="1" root="/Newer">
@@ -68,7 +69,7 @@ def test_bump_game_id_preserves_the_region_character():
     """Character 4 is the region code -- wit derives the disc's region setting
     from it, so touching it turns a USA game into a PAL one."""
     for original in ("SMNE01", "SB4E01", "RMGP01", "SB4J01"):
-        bumped = _bump_game_id(original)
+        bumped = bump_game_id(original)
         assert len(bumped) == 6
         assert bumped != original
         assert bumped[3] == original[3], "region character must be preserved"
@@ -76,7 +77,7 @@ def test_bump_game_id_preserves_the_region_character():
 
 
 def test_bump_game_id_is_stable_when_already_bumped():
-    assert _bump_game_id("SBZE01") != "SBZE01"
+    assert bump_game_id("SBZE01") != "SBZE01"
 
 
 def test_usb_loader_gx_path_layout(tmp_path: Path):
@@ -102,8 +103,8 @@ def test_usb_loader_gx_path_truncates_an_overlong_title(tmp_path: Path):
 
 
 def test_default_sd_root_walks_out_of_the_riivolution_folder(tmp_path: Path):
-    assert _default_sd_root(tmp_path / "sd" / "riivolution" / "m.xml") == tmp_path / "sd"
-    assert _default_sd_root(tmp_path / "m.xml") == tmp_path
+    assert default_sd_root(tmp_path / "sd" / "riivolution" / "m.xml") == tmp_path / "sd"
+    assert default_sd_root(tmp_path / "m.xml") == tmp_path
 
 
 # -- CLI --------------------------------------------------------------------
@@ -119,21 +120,23 @@ def test_list_options_needs_no_wit(mod, capsys):
 def test_xml_for_a_different_game_is_rejected(tmp_path: Path, mod, capsys):
     _, xml = mod
     other = make_iso(tmp_path / "other.iso", game_id="RMGE01")
-    assert main(["--iso", str(other), "--xml", str(xml), "--list-options"]) == 2
+    code = main(["--iso", str(other), "--xml", str(xml), "--all-defaults", "--dry-run"])
+    assert code == 2
     assert "does not apply to RMGE01" in capsys.readouterr().err
 
 
 def test_wrong_region_is_rejected(tmp_path: Path, mod, capsys):
     _, xml = mod
     jp = make_iso(tmp_path / "jp.iso", game_id="SMNJ01")
-    assert main(["--iso", str(jp), "--xml", str(xml), "--list-options"]) == 2
+    code = main(["--iso", str(jp), "--xml", str(xml), "--all-defaults", "--dry-run"])
+    assert code == 2
     assert "does not apply" in capsys.readouterr().err
 
 
 def test_options_without_a_choice_flag_are_refused(mod, capsys):
     iso, xml = mod
     assert main(["--iso", str(iso), "--xml", str(xml), "--out", "x.iso"]) == 2
-    assert "--list-options" in capsys.readouterr().err
+    assert "has options but none were selected" in capsys.readouterr().err
 
 
 def test_bad_choice_syntax_is_reported(mod, capsys):
@@ -145,5 +148,8 @@ def test_bad_choice_syntax_is_reported(mod, capsys):
 
 def test_missing_iso_is_reported(tmp_path: Path, mod, capsys):
     _, xml = mod
-    assert main(["--iso", str(tmp_path / "nope.iso"), "--xml", str(xml), "--list-options"]) == 2
+    code = main(
+        ["--iso", str(tmp_path / "nope.iso"), "--xml", str(xml), "--all-defaults", "--dry-run"]
+    )
+    assert code == 2
     assert "no such ISO" in capsys.readouterr().err

@@ -17,6 +17,9 @@ class Outcome(enum.Enum):
     SKIPPED = "SKIPPED"
     #: We understand the patch but cannot represent it in a static ISO.
     UNSUPPORTED = "UNSUPPORTED"
+    #: Not fatal, but the user should know: two stacked mods touch the same
+    #: file or memory, so the later one silently wins.
+    WARNING = "WARNING"
     FAILED = "FAILED"
 
 
@@ -50,6 +53,9 @@ class Report:
     def unsupported(self, kind: str, detail: str, reason: str) -> None:
         self.add(Outcome.UNSUPPORTED, kind, detail, reason)
 
+    def warned(self, kind: str, detail: str, reason: str) -> None:
+        self.add(Outcome.WARNING, kind, detail, reason)
+
     def failed(self, kind: str, detail: str, reason: str) -> None:
         self.add(Outcome.FAILED, kind, detail, reason)
 
@@ -65,10 +71,11 @@ class Report:
         lines.extend(str(e) for e in self.entries)
         lines.append("")
         lines.append(
-            "  {} applied, {} skipped, {} unsupported, {} failed".format(
+            "  {} applied, {} skipped, {} unsupported, {} warning, {} failed".format(
                 self.count(Outcome.APPLIED),
                 self.count(Outcome.SKIPPED),
                 self.count(Outcome.UNSUPPORTED),
+                self.count(Outcome.WARNING),
                 self.count(Outcome.FAILED),
             )
         )
