@@ -94,6 +94,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="print the option tree of each --xml and exit",
     )
     p.add_argument(
+        "--check-wit",
+        action="store_true",
+        help="report where wit was found and whether it runs, then exit",
+    )
+    p.add_argument(
         "--all-defaults",
         action="store_true",
         help=(
@@ -154,7 +159,32 @@ def _mod_specs(args: argparse.Namespace, selections: dict[str, str]) -> list[Mod
     return specs
 
 
+def _check_wit(wit_path: str | None) -> int:
+    """Report where wit was found and whether it actually runs."""
+    from .disc.wit import WitBackend, find_wit
+
+    found = wit_path or find_wit()
+    if not found:
+        print("wit: NOT FOUND", file=sys.stderr)
+        print(
+            "  Put a wit/ folder next to the program, add wit to PATH, or pass "
+            "--wit-path.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"wit: {found}")
+    try:
+        print(WitBackend(found).version())
+    except Exception as exc:  # noqa: BLE001 - diagnostic, surface anything
+        print(f"  found, but it failed to run: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
+    if args.check_wit:
+        return _check_wit(args.wit_path)
+
     if not args.xml:
         print("error: at least one --xml is required", file=sys.stderr)
         return 2

@@ -107,7 +107,17 @@ Real code-loader mods surface these; synthetic test data does not.
    `0x80001800` holds code is the address itself. Getting this wrong puts the
    loader in a data section, which the apploader does not icache-invalidate.
 
-## Install
+## Download (Windows)
+
+The [Releases](https://github.com/KakarottoCake/riivolution-to-iso/releases)
+tab has a prebuilt Windows zip: unpack it, keep `RiivolutionUltimatum.exe` and
+the `wit/` folder together, and double-click the exe. Nothing to install — wit
+is bundled. `RiivolutionUltimatum.exe --check-wit` confirms wit is found.
+
+To build the release yourself: `pwsh packaging/build_release.ps1` (needs
+`pip install pyinstaller` and wit unpacked under `tools/`).
+
+## Install (from source)
 
 ```
 pip install -e .

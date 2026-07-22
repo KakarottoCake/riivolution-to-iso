@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -20,27 +21,41 @@ from .backend import BootInfo, DiscBackend, DiscError, read_boot_info
 _INSTALL_HINT = (
     "wit (Wiimms ISO Tools) was not found.\n"
     "  Download it from https://wit.wiimm.de/ and either add it to PATH,\n"
-    "  unpack it into tools/ next to this package, or pass --wit-path."
+    "  unpack it into a wit/ or tools/ folder next to the program, or pass --wit-path."
 )
+
+
+def _search_roots() -> list[Path]:
+    """Directories to look under for a bundled wit, most specific first.
+
+    In a PyInstaller build the code runs from a temp extraction dir, so the
+    repo layout is gone; wit ships next to the .exe instead. Cover both: the
+    frozen exe's folder, and the source checkout's root.
+    """
+    roots: list[Path] = []
+    if getattr(sys, "frozen", False):
+        # The real .exe the user launched (onefile extracts code elsewhere).
+        roots.append(Path(sys.executable).resolve().parent)
+    roots.append(Path(__file__).resolve().parents[2])
+    return roots
 
 
 def find_wit() -> str | None:
     """Locate a wit executable: explicit PATH first, then a bundled copy.
 
-    Unpacking the official zip into `tools/` next to the package is enough; no
-    PATH edit and no running its installer.
+    A bundled copy is any `wit/.../wit.exe` or `tools/wit-*/bin/wit.exe` under
+    the program's folder -- no PATH edit and no running wit's installer.
     """
     on_path = shutil.which("wit")
     if on_path:
         return on_path
 
-    repo_root = Path(__file__).resolve().parents[2]
-    for candidate in sorted(repo_root.glob("tools/wit-*/bin/wit.exe"), reverse=True):
-        if candidate.is_file():
-            return str(candidate)
-    for candidate in sorted(repo_root.glob("tools/**/wit"), reverse=True):
-        if candidate.is_file():
-            return str(candidate)
+    patterns = ("wit/**/wit.exe", "tools/wit-*/bin/wit.exe", "wit/**/wit", "tools/**/wit")
+    for root in _search_roots():
+        for pattern in patterns:
+            for candidate in sorted(root.glob(pattern), reverse=True):
+                if candidate.is_file():
+                    return str(candidate)
     return None
 
 
