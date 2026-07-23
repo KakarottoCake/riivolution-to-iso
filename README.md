@@ -1,4 +1,4 @@
-# Riivolution Ultimatum
+# Riivultimatum
 
 Bake a Riivolution mod into a standalone Wii ISO that boots under USB Loader GX
 — **including the memory/code patches** that other converters give up on.
